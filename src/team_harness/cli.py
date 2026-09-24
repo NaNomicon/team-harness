@@ -1,11 +1,14 @@
 import asyncio
+from collections.abc import Callable
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import click
 from pydantic import ValidationError
 
+from team_harness import jobs as worker_jobs
 from team_harness.agents.manager import AgentManager
 from team_harness.agents.registry import get_allowed_types
 from team_harness.agents.registry import validate_templates
@@ -50,6 +53,117 @@ from team_harness.ui.prompt import read_user_input
 @click.group()
 def main() -> None:
     """th \u2014 multi-agent AI orchestration harness."""
+
+
+def _job_call(operation: Callable[[], Any]) -> Any:
+    try:
+        return operation()
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@main.group(name="jobs")
+def jobs_group() -> None:
+    """Run headless harness workers as durable, reusable jobs."""
+
+
+@jobs_group.command(name="spawn")
+@click.option("--harness", required=True, help="Configured Team Harness agent type.")
+@click.option("--task", required=True)
+@click.option("--cwd", default=".", show_default=True, type=click.Path(file_okay=False))
+@click.option("--parent-id")
+@click.option("--model")
+def jobs_spawn(
+    harness: str, task: str, cwd: str, parent_id: str | None, model: str | None
+) -> None:
+    """Start one worker in the requested shared working directory."""
+    try:
+        click.echo(
+            json.dumps(
+                worker_jobs.spawn_job(
+                    harness=harness,
+                    task=task,
+                    cwd=cwd,
+                    parent_id=parent_id,
+                    model=model,
+                ),
+                indent=2,
+            )
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@jobs_group.command(name="__supervise", hidden=True)
+@click.argument("job_id")
+def jobs_supervise(job_id: str) -> None:
+    """Internal detached worker lifecycle process."""
+    asyncio.run(worker_jobs.supervise_entry(job_id))
+
+
+@jobs_group.command(name="status")
+@click.argument("job_id", required=False)
+def jobs_status(job_id: str | None) -> None:
+    value = _job_call(
+        lambda: worker_jobs.reconcile(job_id) if job_id else worker_jobs.list_jobs()
+    )
+    click.echo(json.dumps(value, indent=2))
+
+
+@jobs_group.command(name="inspect")
+@click.argument("job_id")
+def jobs_inspect(job_id: str) -> None:
+    click.echo(json.dumps(_job_call(lambda: worker_jobs.inspect_job(job_id)), indent=2))
+
+
+@jobs_group.command(name="wait")
+@click.argument("job_id")
+def jobs_wait(job_id: str) -> None:
+    click.echo(json.dumps(_job_call(lambda: worker_jobs.wait_job(job_id)), indent=2))
+
+
+@jobs_group.command(name="cancel")
+@click.argument("job_id")
+def jobs_cancel(job_id: str) -> None:
+    click.echo(json.dumps(_job_call(lambda: worker_jobs.cancel_job(job_id)), indent=2))
+
+
+@jobs_group.command(name="resume")
+@click.argument("job_id")
+@click.option("--task", required=True)
+def jobs_resume(job_id: str, task: str) -> None:
+    try:
+        click.echo(json.dumps(worker_jobs.resume_job(job_id, task), indent=2))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@jobs_group.command(name="send")
+@click.argument("job_id")
+@click.option("--message", required=True)
+def jobs_send(job_id: str, message: str) -> None:
+    """Continue a completed session through its native resume command."""
+    try:
+        click.echo(json.dumps(worker_jobs.resume_job(job_id, message), indent=2))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@jobs_group.command(name="subscribe")
+@click.argument("job_id")
+@click.option("--since", default=0, type=click.IntRange(min=0))
+def jobs_subscribe(job_id: str, since: int) -> None:
+    """Stream lifecycle events as NDJSON until the job is terminal."""
+    offset = since
+    while True:
+        events = _job_call(lambda: worker_jobs.inspect_job(job_id))["events"]
+        while offset < len(events):
+            click.echo(json.dumps(events[offset], separators=(",", ":")))
+            offset += 1
+        status = _job_call(lambda: worker_jobs.reconcile(job_id))["status"]
+        if status in worker_jobs.TERMINAL:
+            return
+        time.sleep(0.15)
 
 
 def _write_config_file(path: Path, text: str, force: bool) -> None:

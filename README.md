@@ -110,6 +110,33 @@ th logs
 th logs <run-id>
 ```
 
+### Standalone worker jobs
+
+The worker lifecycle can also be used without starting a coordinator. `th jobs` launches one
+configured worker in the current or requested working directory, stores a durable job record,
+captures its output, and exposes status, wait, event subscription, cancellation, and native session
+resume. Commands run through `ditto run <harness> -- ...` unless the agent template already names
+Ditto. This keeps the selected Ditto profile's authentication and default model in effect.
+Pass `--model` only when a job should override the model selected by that profile; Team Harness'
+coordinator-specific model defaults do not override Ditto for standalone jobs. The built-in
+`antigravity` agent type maps to Ditto's `agy` profile.
+
+```bash
+th jobs spawn --harness codex --task "Implement the assigned change" --cwd "$PWD" --parent-id "$PARENT_ID"
+th jobs status
+th jobs subscribe <job-id>
+th jobs wait <job-id>
+th jobs inspect <job-id>
+th jobs cancel <job-id>
+th jobs resume <job-id> --task "Continue with this follow-up"
+th jobs send <job-id> --message "Continue with this follow-up"
+```
+
+`send` submits a provider-native continuation after the current turn completes; it does not inject
+input into a running process. Job state defaults to `~/.team-harness/jobs` and can be relocated with
+`TEAM_HARNESS_JOBS_DIR`. Workers use the shared worktree supplied through `--cwd`. No coordinator
+API credentials are needed for these commands.
+
 ## Python SDK
 
 Use team-harness programmatically from Python:
